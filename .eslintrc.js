@@ -23,6 +23,18 @@ module.exports = {
     "linebreak-style": ["error", "unix"],
     quotes: ["error", "double"],
     semi: ["error", "always"],
+    "@typescript-eslint/no-explicit-any": "warn",
+    "@typescript-eslint/no-inferrable-types": "warn",
+    "@typescript-eslint/no-unused-vars": "warn",
+    "no-undef": ["error", { typeof: true }],
   },
   parser: "vue-eslint-parser",
+  globals: {
+    // 添加 Web Authentication API 相关的全局变量
+    PublicKeyCredential: "readonly",
+    CredentialsContainer: "readonly",
+    AuthenticatorResponse: "readonly",
+    AuthenticatorAttestationResponse: "readonly",
+    AuthenticatorAssertionResponse: "readonly",
+  },
 };
