@@ -165,8 +165,8 @@ async function signData(): Promise<void> {
     const webauthn: WebAuthnInfo = {
       authenticatorData: arrayBufferToHex(authenticatorData),
       clientDataJSON: arrayBufferToHex(clientDataJSON),
-      challengeIndex: clientDataString.indexOf("'challenge'"),
-      typeIndex: clientDataString.indexOf("'type'"),
+      challengeIndex: clientDataString.indexOf('"challenge"'),
+      typeIndex: clientDataString.indexOf('"type"'),
       r: arrayBufferToHex(r),
       s: arrayBufferToHex(s),
     };

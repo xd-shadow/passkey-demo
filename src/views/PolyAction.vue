@@ -21,7 +21,6 @@
           <input v-model="amount" placeholder="金额 (BNB)" type="number" />
           <button @click="sendTransaction">发送</button>
         </div>
-        <!-- 发送AA账户中的ERC20代币 -->
       </div>
     </section>
   </div>
@@ -33,7 +32,15 @@ import { ethers, AbiCoder, Interface } from "ethers";
 import PassKeyAccountAbi from "@src/abis/PassKeyAccount.json";
 import PassKeyAccountFactoryAbi from "@src/abis/PassKeyAccountFactory.json";
 import ERC20Abi from "@src/abis/ERC20.json";
-import { arrayBufferToHex, parsePublicKeyPoints, hexToArrayBuffer, getWebAuthnSignature } from "@src/utils";
+import IEntryPointAbi from "@src/abis/IEntryPoint.json";
+import {
+  arrayBufferToHex,
+  parsePublicKeyPoints,
+  hexToArrayBuffer,
+  getWebAuthnSignature,
+  calculatePreVerificationGas,
+} from "@src/utils";
+import { UserOperation } from "@src/types";
 
 // 配置BNB Chain测试网
 const BNB_TESTNET_RPC = "https://data-seed-prebsc-1-s1.bnbchain.org:8545";
@@ -152,20 +159,11 @@ const createAccount = async () => {
     );
     const receipt = await tx.wait();
     localStorage.setItem("aaAddress", callRes);
-    // getBalance();
     console.log("receipt", receipt);
   } catch (error: unknown) {
     console.error(error);
   }
 };
-
-// 获取余额
-// const getBalance = async () => {
-//   if (aaAddress.value) {
-//     const bal = await provider.getBalance(aaAddress.value);
-//     balance.value = ethers.formatEther(bal);
-//   }
-// };
 
 // 发送交易(通过抽象账户)
 const sendTransaction = async () => {
@@ -199,57 +197,94 @@ const sendTransaction = async () => {
   const feeData = await provider.getFeeData();
   const maxFeePerGas = feeData.maxFeePerGas || ethers.parseUnits("10", "gwei");
   const maxPriorityFeePerGas = feeData.maxPriorityFeePerGas || ethers.parseUnits("1", "gwei");
-  const userOp = {
+
+  let userOp: UserOperation = {
     sender: aaAddress.value,
     nonce: nonce,
     initCode: "0x",
     callData: accountContract.interface.encodeFunctionData("execute", [targetAddress, value, data]),
     callGasLimit: "0x55555",
     verificationGasLimit: "0x55555",
-    preVerificationGas: "0x55555",
-    maxFeePerGas: maxFeePerGas,
-    maxPriorityFeePerGas: maxPriorityFeePerGas,
-    paymasterAndData: "0x",
-    signature: "0x",
-  };
-  //通过sha256计算hash
-  console.log("userOp", userOp);
-  // 确保所有参数都已转换为十六进制字符串
-  const encodedUserOp = {
-    ...userOp,
-    nonce: ethers.toBeHex(userOp.nonce),
-    callGasLimit: ethers.toBeHex(userOp.callGasLimit),
-    verificationGasLimit: ethers.toBeHex(userOp.verificationGasLimit),
-    preVerificationGas: ethers.toBeHex(userOp.preVerificationGas),
+    preVerificationGas: "0x15555",
     maxFeePerGas: ethers.toBeHex(maxFeePerGas),
     maxPriorityFeePerGas: ethers.toBeHex(maxPriorityFeePerGas),
+    paymasterAndData: "0x",
   };
+  // const preVerificationGas = calculatePreVerificationGas(userOp);
+  // userOp.preVerificationGas = ethers.toBeHex(preVerificationGas);
 
+  console.log("userOp", userOp);
+
+  //通过sha256计算hash
   const userOpHash = ethers.keccak256(
     ethers.AbiCoder.defaultAbiCoder().encode(
-      ["address", "uint256", "bytes", "bytes", "uint256", "uint256", "uint256", "uint256", "bytes", "bytes", "bytes"],
+      ["address", "uint256", "bytes", "bytes", "uint256", "uint256", "uint256", "uint256", "bytes", "bytes"],
       [
-        encodedUserOp.sender,
-        encodedUserOp.nonce,
-        encodedUserOp.initCode,
-        encodedUserOp.callData,
-        encodedUserOp.callGasLimit,
-        encodedUserOp.verificationGasLimit,
-        encodedUserOp.preVerificationGas,
-        encodedUserOp.maxFeePerGas,
-        encodedUserOp.maxPriorityFeePerGas,
-        encodedUserOp.paymasterAndData,
-        encodedUserOp.signature,
+        userOp.sender,
+        userOp.nonce,
+        userOp.initCode,
+        userOp.callData,
+        userOp.callGasLimit,
+        userOp.verificationGasLimit,
+        userOp.preVerificationGas,
+        userOp.maxFeePerGas,
+        userOp.maxPriorityFeePerGas,
+        userOp.paymasterAndData,
       ],
     ),
   );
   console.log("userOpHash", userOpHash);
 
-  const { r, s } = await getWebAuthnSignature(userOpHash);
-  console.log("r", r);
-  console.log("s", s);
+  const webauthnSignature = await getWebAuthnSignature(userOpHash);
+  console.log("webauthnSignature", webauthnSignature);
+  const encodeData = [
+    new Uint8Array(webauthnSignature.authenticatorData),
+    new Uint8Array(webauthnSignature.clientDataJSON),
+    webauthnSignature.challengeIndex,
+    webauthnSignature.typeIndex,
+    ethers.toBigInt(ethers.hexlify(webauthnSignature.r)),
+    ethers.toBigInt(ethers.hexlify(webauthnSignature.s)),
+  ];
+  console.log("encodeData", encodeData);
 
-  //TODO: 发送签名的userOp
+  const webauthnSignatureEncode = ethers.AbiCoder.defaultAbiCoder().encode(
+    ["bytes", "bytes", "uint256", "uint256", "uint256", "uint256"],
+    encodeData,
+  );
+  console.log("webauthnSignatureEncode", webauthnSignatureEncode);
+
+  const keyIndex = 0; //暂时写0，可以从合约取
+
+  const signatureWrapper = ethers.AbiCoder.defaultAbiCoder().encode(
+    ["uint256", "bytes"],
+    [keyIndex, webauthnSignatureEncode],
+  );
+  console.log("signatureWrapper", signatureWrapper);
+
+  userOp.signature = signatureWrapper;
+  console.log("userOp has signature", userOp);
+  const iEntryPointContract = new ethers.Contract(
+    "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789", // BNB 测试网 EntryPoint 地址
+    IEntryPointAbi,
+    wallet,
+  );
+
+  //充手续费
+  // const depositTx = await iEntryPointContract.depositTo(userOp.sender, {
+  //   value: ethers.parseEther("0.04"),
+  //   gasLimit: 1000000,
+  //   gasPrice: feeData.gasPrice,
+  // });
+  // await depositTx.wait();
+
+  const tx = await iEntryPointContract.handleOps([userOp], wallet.address, {
+    gasLimit: 1000000,
+    gasPrice: feeData.gasPrice,
+  });
+
+  console.log("tx", tx);
+  const receipt = await tx.wait();
+  console.log("receipt", receipt);
 };
 </script>
 
