@@ -14,6 +14,7 @@
 </template>
 
 <script lang="ts" setup>
+/* eslint-disable quotes */
 import { ref } from "vue";
 import { parseDER, arrayBufferToHex, importPublicKey, parsePublicKeyPoints } from "@src/utils";
 

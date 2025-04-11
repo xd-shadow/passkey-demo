@@ -28,7 +28,8 @@
 
 <script lang="ts" setup>
 import { ref } from "vue";
-import { ethers, AbiCoder, Interface } from "ethers";
+import { ethers, AbiCoder, Interface, keccak256 } from "ethers";
+import { fromHex } from "viem";
 import PassKeyAccountAbi from "@src/abis/PassKeyAccount.json";
 import PassKeyAccountFactoryAbi from "@src/abis/PassKeyAccountFactory.json";
 import ERC20Abi from "@src/abis/ERC20.json";
@@ -41,10 +42,13 @@ import {
   calculatePreVerificationGas,
 } from "@src/utils";
 import { UserOperation } from "@src/types";
+import { V06 } from "userop";
 
 // 配置BNB Chain测试网
 const BNB_TESTNET_RPC = "https://data-seed-prebsc-1-s1.bnbchain.org:8545";
 const FACTORY_ADDRESS = "0xC5eB87F2499326506De69Ec003DD275210a07c94";
+const CHAINID = 97; // BNB 测试网链ID
+const ENTRY_POINT_ADDRESS = "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789"; // BNB 测试网 EntryPoint 地址
 // 账户相关状态
 // 固定私钥 (仅用于测试环境)
 const FIXED_PRIVATE_KEY = "0x6b911fd37cdf5c81d4c0adb1ab7fa822ed253ab0ad9aa18d77257c88b29b718e";
@@ -52,7 +56,7 @@ const FIXED_PRIVATE_KEY = "0x6b911fd37cdf5c81d4c0adb1ab7fa822ed253ab0ad9aa18d772
 const provider = new ethers.JsonRpcProvider(BNB_TESTNET_RPC);
 const wallet = new ethers.Wallet(FIXED_PRIVATE_KEY, provider);
 
-const FIXED_ADDRESS = "0x16bB6031CBF3a12B899aB99D96B64b7bbD719705"; // 账户地址、
+const FIXED_ADDRESS = "0x16bB6031CBF3a12B899aB99D96B64b7bbD719705"; // 账户地址
 const SALT = "0x00";
 
 //passkey相关
@@ -132,15 +136,10 @@ const createAccount = async () => {
     return;
   }
   try {
-    // const { x, y } = parsePublicKeyPoints(passkeyPublicKey.value);
     const xy = new Uint8Array(passkeyPublicKey.value).slice(-64);
     const factoryContract = new ethers.Contract(FACTORY_ADDRESS, PassKeyAccountFactoryAbi, wallet);
 
-    const callRes = await factoryContract.createAccount.staticCall(
-      // [AbiCoder.defaultAbiCoder().encode(["address"], [FIXED_ADDRESS])],
-      [xy],
-      SALT,
-    );
+    const callRes = await factoryContract.createAccount.staticCall([xy], SALT);
     console.log(callRes);
 
     if (callRes) {
@@ -148,15 +147,10 @@ const createAccount = async () => {
     }
 
     const gasPrice = await provider.getFeeData();
-    const tx = await factoryContract.createAccount(
-      // [AbiCoder.defaultAbiCoder().encode(["address"], [FIXED_ADDRESS])],
-      [xy],
-      SALT,
-      {
-        gasLimit: 1000000,
-        gasPrice: gasPrice.gasPrice,
-      },
-    );
+    const tx = await factoryContract.createAccount([xy], SALT, {
+      gasLimit: 1000000,
+      gasPrice: gasPrice.gasPrice,
+    });
     const receipt = await tx.wait();
     localStorage.setItem("aaAddress", callRes);
     console.log("receipt", receipt);
@@ -180,14 +174,8 @@ const sendTransaction = async () => {
       toAddress.value,
       ethers.parseUnits(amount.value, 9),
     ]);
-
-    // const tx = await accountContract.execute(tokenAddress.value, "0", data);
-    // await tx.wait();
   } else {
     // 发送原生代币
-    // const tx = await accountContract.execute(toAddress.value, ethers.parseEther(amount.value), "0x");
-    // await tx.wait();
-    // console.log("tx", tx);
     targetAddress = toAddress.value;
     value = ethers.parseEther(amount.value);
     data = "0x00";
@@ -215,24 +203,32 @@ const sendTransaction = async () => {
 
   console.log("userOp", userOp);
 
-  //通过sha256计算hash
-  const userOpHash = ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["address", "uint256", "bytes", "bytes", "uint256", "uint256", "uint256", "uint256", "bytes", "bytes"],
-      [
-        userOp.sender,
-        userOp.nonce,
-        userOp.initCode,
-        userOp.callData,
-        userOp.callGasLimit,
-        userOp.verificationGasLimit,
-        userOp.preVerificationGas,
-        userOp.maxFeePerGas,
-        userOp.maxPriorityFeePerGas,
-        userOp.paymasterAndData,
-      ],
-    ),
+  //计算hash
+  const packed = AbiCoder.defaultAbiCoder().encode(
+    ["address", "uint256", "bytes32", "bytes32", "uint256", "uint256", "uint256", "uint256", "uint256", "bytes32"],
+    [
+      userOp.sender,
+      userOp.nonce,
+      keccak256(userOp.initCode),
+      keccak256(userOp.callData),
+      userOp.callGasLimit,
+      userOp.verificationGasLimit,
+      userOp.preVerificationGas,
+      userOp.maxFeePerGas,
+      userOp.maxPriorityFeePerGas,
+      keccak256(userOp.paymasterAndData),
+    ],
   );
+  console.log("packed", packed);
+
+  const enc = AbiCoder.defaultAbiCoder().encode(
+    ["bytes32", "address", "uint256"],
+    [keccak256(packed), ENTRY_POINT_ADDRESS, BigInt(CHAINID)],
+  );
+  console.log("enc", enc);
+
+  const userOpHash = keccak256(enc);
+
   console.log("userOpHash", userOpHash);
 
   const webauthnSignature = await getWebAuthnSignature(userOpHash);
@@ -242,29 +238,47 @@ const sendTransaction = async () => {
     new Uint8Array(webauthnSignature.clientDataJSON),
     webauthnSignature.challengeIndex,
     webauthnSignature.typeIndex,
-    ethers.toBigInt(ethers.hexlify(webauthnSignature.r)),
-    ethers.toBigInt(ethers.hexlify(webauthnSignature.s)),
+    ethers.hexlify(webauthnSignature.r),
+    ethers.hexlify(webauthnSignature.s),
   ];
   console.log("encodeData", encodeData);
+  // console.log([
+  //   ethers.hexlify(new Uint8Array(webauthnSignature.authenticatorData)),
+  //   ethers.hexlify(new Uint8Array(webauthnSignature.clientDataJSON)),
+  //   webauthnSignature.challengeIndex,
+  //   webauthnSignature.typeIndex,
+  //   ethers.hexlify(webauthnSignature.r),
+  //   ethers.hexlify(webauthnSignature.s),
+  // ]);
 
-  const webauthnSignatureEncode = ethers.AbiCoder.defaultAbiCoder().encode(
+  let webauthnSignatureEncoded = AbiCoder.defaultAbiCoder().encode(
     ["bytes", "bytes", "uint256", "uint256", "uint256", "uint256"],
     encodeData,
   );
-  console.log("webauthnSignatureEncode", webauthnSignatureEncode);
+  console.log("webauthnSignatureEncoded", webauthnSignatureEncoded);
+  //临时拼接
+  webauthnSignatureEncoded =
+    "0x0000000000000000000000000000000000000000000000000000000000000020" + webauthnSignatureEncoded.slice(2);
+  console.log("webauthnSignatureEncoded", webauthnSignatureEncoded);
+
+  // const decodeRes = AbiCoder.defaultAbiCoder().decode(
+  //   ["bytes", "bytes", "uint256", "uint256", "uint256", "uint256"],
+  //   webauthnSignatureEncoded,
+  // );
+  // console.log("decodeRes", decodeRes);
 
   const keyIndex = 0; //暂时写0，可以从合约取
 
-  const signatureWrapper = ethers.AbiCoder.defaultAbiCoder().encode(
+  const signatureWrapper = AbiCoder.defaultAbiCoder().encode(
     ["uint256", "bytes"],
-    [keyIndex, webauthnSignatureEncode],
+    [keyIndex, webauthnSignatureEncoded],
   );
   console.log("signatureWrapper", signatureWrapper);
 
   userOp.signature = signatureWrapper;
   console.log("userOp has signature", userOp);
   const iEntryPointContract = new ethers.Contract(
-    "0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789", // BNB 测试网 EntryPoint 地址
+    ENTRY_POINT_ADDRESS, // BNB 测试网 EntryPoint 地址
     IEntryPointAbi,
     wallet,
   );
@@ -276,7 +290,9 @@ const sendTransaction = async () => {
   //   gasPrice: feeData.gasPrice,
   // });
   // await depositTx.wait();
-
+  if (!userOp.signature || userOp.signature === "0x") {
+    throw new Error("Signature is empty");
+  }
   const tx = await iEntryPointContract.handleOps([userOp], wallet.address, {
     gasLimit: 1000000,
     gasPrice: feeData.gasPrice,

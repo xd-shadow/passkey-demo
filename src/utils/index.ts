@@ -1,5 +1,7 @@
-import { ethers } from "ethers";
+/* eslint-disable quotes */
+import { ethers, hexlify } from "ethers";
 import { DERSignature, UserOperation, WebAuthnSignature } from "../types/index";
+// import { fromHex, keccak256 } from "viem";
 export function parseDER(derBytes: Uint8Array): DERSignature {
   if (derBytes[0] !== 0x30) throw new Error("Invalid DER format: missing SEQUENCE");
 
@@ -72,11 +74,36 @@ export async function importPublicKey(publicKeyBytes: ArrayBuffer): Promise<Cryp
 export const getWebAuthnSignature = async (message: string): Promise<WebAuthnSignature> => {
   try {
     // 添加以太坊个人签名前缀
+    // const prefix = "\x19Ethereum Signed Message:\n";
+    // const messageBytes = ethers.toUtf8Bytes(message);
+    // const prefixedMessage = prefix + "32" + message;
+    console.log("message", message);
+
     const prefix = "\x19Ethereum Signed Message:\n";
-    const messageBytes = ethers.toUtf8Bytes(message);
-    const prefixedMessage = prefix + messageBytes.length + message;
-    const prefixedMessageHash = ethers.keccak256(ethers.toUtf8Bytes(prefixedMessage));
-    const challenge = ethers.toUtf8Bytes(prefixedMessageHash);
+    const messageBytes = ethers.getBytes(message);
+    console.log("messageBytes", messageBytes);
+
+    const prefixBytes = ethers.toUtf8Bytes(prefix);
+    console.log("prefixBytes", prefixBytes);
+
+    const messageBytesLength = messageBytes.length.toString();
+    console.log("messageBytesLength", messageBytesLength);
+
+    const messageBytesLengthBytes = ethers.toUtf8Bytes(messageBytesLength);
+
+    const prefixedMessageBytes = new Uint8Array(
+      prefixBytes.length + messageBytesLengthBytes.length + messageBytes.length,
+    );
+    prefixedMessageBytes.set(prefixBytes);
+    prefixedMessageBytes.set(messageBytesLengthBytes, prefixBytes.length);
+    prefixedMessageBytes.set(messageBytes, prefixBytes.length + messageBytesLengthBytes.length);
+
+    const prefixedMessageHash = ethers.keccak256(prefixedMessageBytes);
+
+    console.log("prefixedMessageHash", prefixedMessageHash);
+    const challenge = ethers.getBytes(prefixedMessageHash);
+    console.log("challenge", challenge.buffer);
+
     const publicKeyCredentialRequestOptions = {
       challenge: challenge,
       rpId: "localhost",
@@ -103,12 +130,37 @@ export const getWebAuthnSignature = async (message: string): Promise<WebAuthnSig
     const clientDataJSON = (assertion.response as AuthenticatorAssertionResponse).clientDataJSON;
     const clientDataString = new TextDecoder().decode(clientDataJSON);
 
+    //test isValid
+    const publicKey = await importPublicKey(
+      hexToArrayBuffer(
+        "3059301306072a8648ce3d020106082a8648ce3d03010703420004a9b2ec447b6586e82a80d18207cc8d5e7da1e7482211c45c4e2f40c8ceaac4c5b910591efc7283a09f9cd8f30f265f57469928144de833accf011d2500737823",
+      ),
+    );
+    const rawSignature = new Uint8Array(r.length + s.length);
+    rawSignature.set(r);
+    rawSignature.set(s, r.length);
+    const clientDataHash = await crypto.subtle.digest("SHA-256", clientDataJSON);
+    const verifyData = new Uint8Array(authenticatorData.byteLength + clientDataHash.byteLength);
+    verifyData.set(new Uint8Array(authenticatorData), 0);
+    verifyData.set(new Uint8Array(clientDataHash), authenticatorData.byteLength);
+    console.log("verifyData", hexlify(rawSignature), hexlify(verifyData));
+
+    const isValid = await crypto.subtle.verify(
+      {
+        name: "ECDSA",
+        hash: { name: "SHA-256" },
+      },
+      publicKey,
+      rawSignature.buffer,
+      // signature,
+      verifyData.buffer,
+    );
+    console.log("isValid", isValid);
+
     return {
       authenticatorData: authenticatorData,
       clientDataJSON: clientDataJSON,
-      // eslint-disable-next-line quotes
       challengeIndex: clientDataString.indexOf('"challenge"'),
-      // eslint-disable-next-line quotes
       typeIndex: clientDataString.indexOf('"type"'),
       r: r,
       s: s,
